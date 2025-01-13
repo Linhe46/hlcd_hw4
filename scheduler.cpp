@@ -2,6 +2,8 @@
 #include <minisat/core/Solver.h>
 #include <queue>
 #include <unordered_map>
+#include <unordered_set>
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -218,44 +220,100 @@ struct SDCSolver{
     }
 };
 
+void get_dependent_constraints(SDCSolver* sdc_solver, DFG *dfg, const vec2d<int>& deps){
+    // opi depends on opj
+    for(int i = 0; i < deps.size(); i++){
+        auto& stmt_i = dfg->stmts[i];
+        // opi is combinational
+        if(is_comb(stmt_i)){
+            for(auto j: deps[i]){
+                auto& stmt_j = dfg->stmts[j];
+                // at least 0/lat_j-1 cycle
+                // comb-comb/temp-comb NEED delay check
+                sdc_solver->addConstraint(j, i, is_comb(stmt_j) ? 0 : 1 - stmt_j->op->latency); // xj <= xi
+            }
+        }
+        // opi is temporal
+        else{
+            for(auto j: deps[i]){
+                auto& stmt_j = dfg->stmts[j];
+                // decided by latency
+                // xi - xj >= Lat_j -> xj - xi <= -Lat_j, comb_lat is 1 for temp
+                sdc_solver->addConstraint(j, i, is_comb(stmt_j) ? -1 : -stmt_j->op->latency);
+            }
+        }
+    }
+}
+
+unordered_set<int> dfs_cp(int s, double cur_delay, DFG* dfg, double clock_period, const vec2d<int>& uses){
+    unordered_set<int> res{};
+    for(auto k: uses[s]){
+        auto stmt_k = dfg->stmts[k];
+        if(!is_comb(stmt_k)) // *-temp, no delay check
+            continue;
+        double k_delay = stmt_k->op->delay;
+        if(clock_period - cur_delay < k_delay) // find a leaf
+            res.insert(k);
+        else{
+            auto sub_set = dfs_cp(k, cur_delay + k_delay, dfg, clock_period, uses);
+            res.insert(sub_set.begin(), sub_set.end());
+        }
+    }
+    return res;
+}
+
+void get_chaining_constraints(SDCSolver* sdc_solver, DFG *dfg, const vec2d<int>& uses,
+    const vector<int>& topo_order, double clock_period){
+    for(auto i: topo_order){
+        auto stmt_i = dfg->stmts[i];
+        // search the critical path
+        unordered_set<int> next_cycle_set = dfs_cp(i, stmt_i->op->delay, dfg, clock_period, uses);
+        for(auto j: next_cycle_set) // xj - xi >= t, t = 1 for comb, lat_i for temp
+            sdc_solver->addConstraint(i, j, is_comb(stmt_i) ? -1 : -stmt_i->op->latency); // 
+    }
+}
+
 void schedule(DFG *dfg, const vector<Op*> &ops, double clock_period) {
     cout<<"-----------my schedule begin----------------\n";
-    /*for(auto op_ptr:ops){
-        std::cout<<op_ptr->name<<' ';
-    }
-    cout<<'\n'<<"clock period is "<<clock_period<<'\n';
-    cout << "dfg_memory_num is " << dfg->num_memory << '\n';
-    int tot_lat = asap(dfg, ops, clock_period);
-    cout<<"ASAP Total latency: "<< tot_lat << endl;
-    
-    cout<<"schedule result is: ";
-    for(auto stmt: dfg->stmts){
-        cout<<stmt->start_cycle<<' ';
-    }*/
-    int n = 5;
-    SDCSolver* sdc_solver = new SDCSolver(n);
-    // test initial_solve
-    /*sdc_solver->addConstraint(0, 1, 3);
-    sdc_solver->addConstraint(0, 2, 3);
-    sdc_solver->addConstraint(2, 0, -3);
-    sdc_solver->addConstraint(2, 1, -2);
-    sdc_solver->addConstraint(3, 2, -1);
-    sdc_solver->addConstraint(4, 3, 4);*/
-    // test inc_solve
-    sdc_solver->addConstraint(2, 1, -2);
-    sdc_solver->addConstraint(0, 1, 3);
-    sdc_solver->addConstraint(1, 2, 3);
-    sdc_solver->addConstraint(3, 0, -4);
-    sdc_solver->addConstraint(3, 2, -1);
-    sdc_solver->addConstraint(4, 3, 4);
 
-    bool flag = sdc_solver->initial_solve();
-    if(flag) sdc_solver->printSolutioin();
-    else cout<<"Negative cycle found!"<<endl;
-    // 5->2 , weight = 1
-    if(sdc_solver->inc_solve(1, 4, -1))
-        sdc_solver->printSolutioin("incremental solution");
-    else cout<<"Negative cycle found!"<<endl;
+    int n = dfg->stmts.size();
+    SDCSolver* sdc_solver = new SDCSolver(n);
+
+    vec2d<int> uses,deps;
+    get_deps_and_uses(dfg, deps, uses);
+    vector<int> topo_order{};
+    topo_sort(n, topo_order, uses, deps);
+
+    get_dependent_constraints(sdc_solver, dfg, deps);
+    int dep_cons_num;
+    cout<<"dependent constraints: \n";
+    for(auto cons_ptr: sdc_solver->constraints){
+        int u=cons_ptr->u;
+        int v=cons_ptr->v;
+        int c=cons_ptr->c;
+        cout<< "x"<<v <<" - x"<<u<<" <= "<< c<<endl;
+        dep_cons_num = sdc_solver->constraints.size();
+    }
+    cout<<"chaining constraints: \n";
+    get_chaining_constraints(sdc_solver, dfg, uses, topo_order, clock_period);
+    for(int i = dep_cons_num; i < sdc_solver->constraints.size(); i++){
+        auto cons_ptr = sdc_solver->constraints[i];
+        int u=cons_ptr->u;
+        int v=cons_ptr->v;
+        int c=cons_ptr->c;
+        cout<< "x"<<v <<" - x"<<u<<" <= "<< c<<endl;
+    }
+    cout << "sdc_initial solution "<< endl;
+    sdc_solver->initial_solve();
+
+    auto& res = sdc_solver->dist;
+    auto min_ele_abs = abs(*min_element(res.begin(), res.end()));
+    for(int i = 0; i < n; i++){
+        cout<<i<<" is at " << res[i] + min_ele_abs + 1<<endl;
+    }
+    for(int i = 0; i < n; i++){
+        dfg->stmts[i]->start_cycle = res[i] + min_ele_abs + 1;
+    }
 
     delete sdc_solver;
     cout<<"---------my schedule end-------------------\n";

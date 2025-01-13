@@ -86,14 +86,6 @@ int asap(DFG* dfg, const vector<Op*>& ops, double clock_period){
 }
 
 void schedule(DFG *dfg, const vector<Op*> &ops, double clock_period) {
-    /*for(auto stmt_ptr: dfg->stmts)
-        stmt_ptr->start_cycle = 1;
-    (dfg->stmts.back())->start_cycle = 2;
-    for(auto stmt_ptr: dfg->stmts){
-        for(auto stmt_ins_ptr:stmt_ptr->ins)
-            std::cout<<stmt_ins_ptr->op->name<<' ';
-        std::cout<<'\n';
-    }*/
     for(auto op_ptr:ops){
         std::cout<<op_ptr->name<<' ';
     }
@@ -107,16 +99,4 @@ void schedule(DFG *dfg, const vector<Op*> &ops, double clock_period) {
         cout<<stmt->start_cycle<<' ';
     }
     cout<<endl;
-    /*for(int i = 0; i < uses.size(); i++){
-        cout<<"stmt " <<i << " is used by: ";
-        for(auto id: uses[i])
-            cout<<id<<' ';
-        cout<<'\n';
-    }
-    for(int i = 0; i < deps.size(); i++){
-        cout<<"stmt " <<i << " depend on: ";
-        for(auto id: deps[i])
-            cout<<id<<' ';
-        cout<<'\n';
-    }*/
 }

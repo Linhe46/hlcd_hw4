@@ -3,6 +3,8 @@
 #include <queue>
 #include <unordered_map>
 #include <cmath>
+#include <limits>
+#include <utility>
 #include <iostream>
 
 using namespace std;
@@ -124,19 +126,137 @@ int asap(DFG* dfg, const vector<Op*>& ops, double clock_period){
     return tot_latency;
 }
 
+struct Cons{
+    // x_{v} - x{u} <= c
+    // equals an edge from u to v with weight c
+    int v, u;
+    int c;
+    Cons(int v, int u, int c): v(v), u(u), c(c){}
+};
+
+struct SDCSolver{
+    int n; // num of vals
+    vector<Cons*> constraints; 
+    vector<int> dist;
+    vector<vector<pair<int, int>>> edges; // for inc_solver's dijkstra
+
+    SDCSolver(int n): n(n){
+        dist.resize(n, 0);
+        edges.resize(n, {});
+    }
+    ~SDCSolver(){
+        for(auto cons_ptr: constraints)
+            delete cons_ptr;
+    }
+
+    void addConstraint(int v, int u, int c){
+        Cons* cons_ptr = new Cons(v, u, c);
+        constraints.push_back(cons_ptr);
+        edges[u].push_back({v, c}); // add edge
+    }
+    // initial solve by Bellman-Ford algorithm
+    bool initial_solve(){
+        for(int i = 0; i < n-1; i++){
+            bool updated = false;
+            for(auto cons_ptr: constraints){
+                int u = cons_ptr->u;
+                int v = cons_ptr->v;
+                int c = cons_ptr->c;
+                if(dist[u] + c < dist[v]){
+                    dist[v] = dist[u] + c;
+                    updated = true;
+                }
+            }
+            if(!updated) break; // early break
+        }
+        // negative cycle check
+        for(auto cons_ptr: constraints){
+            int u = cons_ptr->u;
+            int v = cons_ptr->v;
+            int c = cons_ptr->c;
+            if(dist[u] + c < dist[v])
+                return false;
+        }
+        return true;
+    }
+
+    bool inc_solve(int v, int u, int c){
+        vector<int> dist_new = dist;
+        vector<int> dist_v(n, numeric_limits<int>::max());
+        dist_v[v] = 0;
+        auto cmp = [&dist_v](int u, int v) { return dist_v[u] > dist_v[v]; };
+        priority_queue<int, vector<int>, decltype(cmp)> pq(cmp);
+        pq.push(v);
+        while(!pq.empty()){
+            int cur_node = pq.top();
+            pq.pop();
+            int d = dist_v[cur_node] + dist[cur_node] - dist[v]; // edmond_karp length
+            if(dist[u] + d + c < dist[cur_node]){
+                if(cur_node == u)
+                    return false; // update u, negative cycle!
+                dist_new[cur_node] = dist[u] + d + c; // update solution
+                for(auto& pair: edges[cur_node]){
+                    int w = pair.first; // to_node
+                    int k = pair.second; // weight
+                    int ek_d = k + dist[cur_node] - dist[w]; 
+                    if(dist_v[cur_node] + ek_d < dist_v[w]){
+                        dist_v[w] = dist_v[cur_node] + ek_d;
+                        pq.push(w);
+                    }
+                }
+            }
+        }
+        addConstraint(v, u, c); // add the constraint
+        dist = std::move(dist_new); // update solution
+        return true;
+    }
+
+    void printSolutioin(const std::string& info = "SDC solution"){
+        cout<<info<<endl;
+        for(int i = 0; i < n; i++)
+            cout<<"variable "<< i+1 <<": " <<dist[i]<<endl;
+    }
+};
+
 void schedule(DFG *dfg, const vector<Op*> &ops, double clock_period) {
-    cout<<"-----------my debug----------------\n";
-    for(auto op_ptr:ops){
+    cout<<"-----------my schedule begin----------------\n";
+    /*for(auto op_ptr:ops){
         std::cout<<op_ptr->name<<' ';
     }
     cout<<'\n'<<"clock period is "<<clock_period<<'\n';
     cout << "dfg_memory_num is " << dfg->num_memory << '\n';
-    asap(dfg, ops, clock_period);
-
+    int tot_lat = asap(dfg, ops, clock_period);
+    cout<<"ASAP Total latency: "<< tot_lat << endl;
     
     cout<<"schedule result is: ";
     for(auto stmt: dfg->stmts){
         cout<<stmt->start_cycle<<' ';
-    }
-    cout<<endl;
+    }*/
+    int n = 5;
+    SDCSolver* sdc_solver = new SDCSolver(n);
+    // test initial_solve
+    /*sdc_solver->addConstraint(0, 1, 3);
+    sdc_solver->addConstraint(0, 2, 3);
+    sdc_solver->addConstraint(2, 0, -3);
+    sdc_solver->addConstraint(2, 1, -2);
+    sdc_solver->addConstraint(3, 2, -1);
+    sdc_solver->addConstraint(4, 3, 4);*/
+    // test inc_solve
+    sdc_solver->addConstraint(2, 1, -2);
+    sdc_solver->addConstraint(0, 1, 3);
+    sdc_solver->addConstraint(1, 2, 3);
+    sdc_solver->addConstraint(3, 0, -4);
+    sdc_solver->addConstraint(3, 2, -1);
+    sdc_solver->addConstraint(4, 3, 4);
+
+    bool flag = sdc_solver->initial_solve();
+    if(flag) sdc_solver->printSolutioin();
+    else cout<<"Negative cycle found!"<<endl;
+    // 5->2 , weight = 1
+    if(sdc_solver->inc_solve(1, 4, -1))
+        sdc_solver->printSolutioin("incremental solution");
+    else cout<<"Negative cycle found!"<<endl;
+
+    delete sdc_solver;
+    cout<<"---------my schedule end-------------------\n";
 } 

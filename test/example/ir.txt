@@ -1,0 +1,4 @@
+3 2 3
+shift_left 4 -1
+addi 4 6
+store 2 5 7

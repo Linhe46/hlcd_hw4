@@ -273,6 +273,40 @@ void get_chaining_constraints(SDCSolver* sdc_solver, DFG *dfg, const vec2d<int>&
     }
 }
 
+// a naive linear order from topo_Sort
+void get_linear_order_topo(DFG *dfg, const vector<int>& topo_order, unordered_map<string, vector<int>>& linear_order){
+    for(auto id: topo_order){
+        if(dfg->stmts[id]->op->limit == -1) // no limit ops
+            continue;
+        auto op_name = dfg->stmts[id]->op->name;
+        linear_order[op_name].push_back(id);
+    }
+}
+
+void get_resource_constraints(SDCSolver* sdc_solver, DFG* dfg, const unordered_map<string, vector<int>>& linear_order){
+    for(const auto& pair: linear_order){
+        auto& order = pair.second;
+        auto limit = dfg->stmts[order[0]]->op->limit;
+        auto latency = dfg->stmts[order[0]]->op->latency;
+        // grouping and get constraints
+        // x_{i+limit} - x_i >= latancy
+        if(limit >= order.size())
+            continue;
+        for(int i = 0; i < limit; i++){
+            for(int j = 0; j < order.size()/limit; j++){
+                int idx_j = i + j * limit;
+                int idx_k = idx_j + limit;
+                if(idx_k >= order.size())
+                    continue;
+                int x_j = order[idx_j];
+                int x_k = order[idx_k];
+                sdc_solver->addConstraint(x_j, x_k, -latency);
+                cout<<pair.first<<"with size "<<order.size()<< ": x"<<x_j <<" - x"<<x_k <<" <= "<< -latency<<endl;
+            }
+        }
+    }
+}
+
 void schedule(DFG *dfg, const vector<Op*> &ops, double clock_period) {
     cout<<"-----------my schedule begin----------------\n";
 
@@ -303,6 +337,11 @@ void schedule(DFG *dfg, const vector<Op*> &ops, double clock_period) {
         int c=cons_ptr->c;
         cout<< "x"<<v <<" - x"<<u<<" <= "<< c<<endl;
     }
+    cout<<"resource constraints: \n";
+    unordered_map<string, vector<int>> linear_order;
+    get_linear_order_topo(dfg, topo_order, linear_order);
+    get_resource_constraints(sdc_solver, dfg, linear_order);
+
     cout << "sdc_initial solution "<< endl;
     sdc_solver->initial_solve();
 

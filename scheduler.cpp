@@ -273,16 +273,6 @@ void get_chaining_constraints(SDCSolver* sdc_solver, DFG *dfg, const vec2d<int>&
     }
 }
 
-// a naive linear order from topo_Sort
-void get_linear_order_topo(DFG *dfg, const vector<int>& topo_order, unordered_map<string, vector<int>>& linear_order){
-    for(auto id: topo_order){
-        if(dfg->stmts[id]->op->limit == -1) // no limit ops
-            continue;
-        auto op_name = dfg->stmts[id]->op->name;
-        linear_order[op_name].push_back(id);
-    }
-}
-
 void get_resource_constraints(SDCSolver* sdc_solver, DFG* dfg, const unordered_map<string, vector<int>>& linear_order){
     for(const auto& pair: linear_order){
         auto& order = pair.second;
@@ -307,16 +297,122 @@ void get_resource_constraints(SDCSolver* sdc_solver, DFG* dfg, const unordered_m
     }
 }
 
+int asap_no_check(DFG* dfg, const vector<int>& topo_order, const vec2d<int>& deps, vector<int>& asap_order){
+    int n = dfg->stmts.size();
+    asap_order.resize(n, 0);
+    int tot_latency = 0;
+    // consider only dependencies
+    for(auto v: topo_order){
+        auto stmt_v = dfg->stmts[v];
+        int l_v = stmt_v->op->latency;
+        if(deps[v].size() == 0){
+            asap_order[v] = 1;
+        }
+        else{
+            if(is_comb(stmt_v)){
+                for(auto u: deps[v]){ // enumerating predecessors
+                    auto stmt_u = dfg->stmts[u];
+                    int l_u = stmt_u->op->latency;
+                    // comb-comb no latency, temp-comb latency-1 delay
+                    asap_order[v] = max(asap_order[v], asap_order[u] + (is_comb(stmt_u) ? 0 : l_u - 1));
+                }
+            }
+            // v is temp
+            else{
+                for(auto u: deps[v]){
+                    auto stmt_u = dfg->stmts[u];
+                    int l_u = stmt_u->op->latency;
+                    // temp-temp with latency delay, comb-temp with 1 delay
+                    asap_order[v] = max(asap_order[v], asap_order[u] + (is_comb(stmt_u) ? 1 : l_u));
+                }
+            }
+        }
+        int last_cycle_v = asap_order[v] + (is_comb(stmt_v) ? 0 : l_v - 1); 
+        tot_latency = max(tot_latency, last_cycle_v);
+    }
+    return tot_latency;
+}
+
+// no limit alap
+void alap(int L, DFG *dfg, const vector<int>& topo_order_rev, const vec2d<int>& uses ,vector<int>& alap_order){
+    int n = dfg->stmts.size();
+    alap_order.resize(n, L);
+    for(auto v: topo_order_rev){
+        auto stmt_v = dfg->stmts[v];
+        auto l_v = stmt_v->op->latency;
+        if(uses[v].size()==0)
+            //alap_order[v] = L - (is_comb(stmt_v) ? 1 : l_v) + 1; // comb should be done at the end cycle
+            alap_order[v] = is_comb(stmt_v) ? L : (L - l_v + 1); // comb should be done at the end cycle
+        else{
+            if(is_comb(stmt_v)){
+                for(auto vj: uses[v]){ // enumerate successors v->vj
+                    auto stmt_vj = dfg->stmts[vj];
+                    auto l_vj = stmt_vj->op->latency;
+                    // comb-temp with 1 latency delay, comb-comb with no delay
+                    alap_order[v] = min(alap_order[v], alap_order[vj] - (is_comb(stmt_vj) ? 0 : 1));
+                }
+            }
+            else{
+                for(auto vj: uses[v]){ // enumerate successors v->vj
+                    auto stmt_vj = dfg->stmts[vj];
+                    auto l_vj = stmt_vj->op->latency;
+                    // temp-comb with l_v-1 delay, temp-temp with l_v delay
+                    alap_order[v] = min(alap_order[v], alap_order[vj] - l_v + (is_comb(stmt_vj) ? 1 : 0));
+                }
+            }
+        }
+    }
+}
+
+void get_linear_order(DFG* dfg, const vector<int>& src_order, unordered_map<string, vector<int>>& linear_order){
+    for(auto id: src_order){
+        if(dfg->stmts[id]->op->limit == -1) // no limit ops
+            continue;
+        auto op_name = dfg->stmts[id]->op->name;
+        linear_order[op_name].push_back(id);
+    }
+}
+
 void schedule(DFG *dfg, const vector<Op*> &ops, double clock_period) {
     cout<<"-----------my schedule begin----------------\n";
 
     int n = dfg->stmts.size();
     SDCSolver* sdc_solver = new SDCSolver(n);
 
+    //cout<<"ASAP schedule with delay and limit check\n";
+    //int L = asap(dfg, ops, clock_period);
+    //cout<<"Max Latency in ASAP with check: "<<L<<endl;
+
     vec2d<int> uses,deps;
     get_deps_and_uses(dfg, deps, uses);
     vector<int> topo_order{};
     topo_sort(n, topo_order, uses, deps);
+
+    cout<<"ASAP schedule without delay and limit check\n";
+    vector<int> asap_order;
+    int L_no_check = asap_no_check(dfg, topo_order, deps, asap_order);
+    cout<<"Max Latency in ASAP without check: "<<L_no_check<<endl;
+    for(int i = 0; i < n; i++){
+        cout<<i<<" is scheduled at "<<asap_order[i]<<endl;
+    }
+
+    cout<<"ALAP scheduling result"<<endl;
+    cout<<"given total Latency: " << L_no_check<<endl;
+    vector<int> alap_order;
+    auto topo_order_rev = topo_order;
+    reverse(topo_order_rev.begin(), topo_order_rev.end());
+    alap(L_no_check, dfg, topo_order_rev, uses, alap_order);
+    for(int i = 0; i < n; i++){
+        cout<<i<<" is at "<< alap_order[i] <<endl;
+    }
+    // Linear order src: alap as primary key, asap as tie breaker
+    auto cmp = [&](int u, int v) {
+            if(alap_order[u] == alap_order[v]) 
+                return asap_order[u] < asap_order[v];
+            return alap_order[u] < alap_order[v]; };
+    vector<int> linear_order_src(n);
+    for(int i = 0; i < n; i++) linear_order_src[i] = i;
+    sort(linear_order_src.begin(), linear_order_src.end(), cmp);
 
     get_dependent_constraints(sdc_solver, dfg, deps);
     int dep_cons_num;
@@ -339,7 +435,8 @@ void schedule(DFG *dfg, const vector<Op*> &ops, double clock_period) {
     }
     cout<<"resource constraints: \n";
     unordered_map<string, vector<int>> linear_order;
-    get_linear_order_topo(dfg, topo_order, linear_order);
+    //get_linear_order_topo(dfg, topo_order, linear_order);
+    get_linear_order(dfg, linear_order_src, linear_order);
     get_resource_constraints(sdc_solver, dfg, linear_order);
 
     cout << "sdc_initial solution "<< endl;
